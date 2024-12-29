@@ -6,12 +6,12 @@ def get_cell_color(frame, point):
     """Sample color from a point and classify it as a Rubik's color"""
     # BGR colors for Rubik's cube
     COLORS = {
-        'white': (255, 255, 255),
-        'yellow': (0, 255, 255),
+        'white': (227, 200, 186),
+        'yellow': (215, 206, 215),
         'blue': (255, 0, 0),
-        'green': (0, 255, 0),
+        'green': (120, 227, 111),
         'red': (0, 0, 255),
-        'orange': (0, 165, 255)
+        'orange': (109, 140, 220)
     }
     
     # Sample color from 5x5 region around point
@@ -30,6 +30,19 @@ def get_cell_color(frame, point):
             
     return closest_color, tuple(avg_color.astype(int))
 
+def transform_points(points_3d, rvec, tvec, camera_matrix, dist_coeffs):
+    """Transform 3D points using rotation and translation, then project to 2D"""
+    # Convert rotation vector to rotation matrix
+    rot_matrix, _ = cv2.Rodrigues(rvec)
+    
+    # Transform points
+    points_transformed = np.dot(rot_matrix, points_3d.T).T + tvec
+    
+    # Project to image plane
+    points_2d, _ = cv2.projectPoints(points_transformed, np.zeros(3), np.zeros(3), 
+                                   camera_matrix, dist_coeffs)
+    return points_2d.reshape(-1, 2)
+
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -47,48 +60,47 @@ def main():
             break
 
         try:
-            # Create visualization frame
-            vis_frame = frame.copy()
-            
             # Detect markers
             corners, ids, rejected = detector.detectMarkers(frame)
 
             if ids is not None:
+                # Create clean copy for sampling
+                clean_frame = frame.copy()
+                
                 # Get pose
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, 0.05, camera_matrix, dist_coeffs)
                 
-                # Draw marker info on visualization frame only
-                draw_marker_info(vis_frame, corners, ids, rvecs, tvecs)
+                # Draw marker info on display frame only
+                draw_marker_info(frame, corners, ids, rvecs, tvecs)
                 
-                # Get marker corners
-                marker_corners = corners[0][0]
-                marker_center = np.mean(marker_corners, axis=0)
+                # Define grid positions in 3D space (z=0 plane)
+                marker_size = 0.05  # 5cm marker
+                cell_size = marker_size * 1.1
+                grid_positions = np.array([
+                    [-1, -1, 0], [0, -1, 0], [1, -1, 0],
+                    [-1,  0, 0],             [1,  0, 0],
+                    [-1,  1, 0], [0,  1, 0], [1,  1, 0]
+                ]) * cell_size
                 
-                # Estimate cell size from marker size
-                cell_size = np.linalg.norm(marker_corners[0] - marker_corners[1]) * 1.1
+                # Transform grid positions using marker pose
+                sample_points = transform_points(grid_positions, 
+                                              rvecs[0], tvecs[0], 
+                                              camera_matrix, dist_coeffs)
                 
-                # Sample colors from surrounding cells
-                grid_positions = [
-                    (-1, -1), (0, -1), (1, -1),
-                    (-1,  0),          (1,  0),
-                    (-1,  1), (0,  1), (1,  1)
-                ]
-                
-                for dx, dy in grid_positions:
-                    # Calculate sampling point
-                    sample_point = marker_center + np.array([dx, dy]) * cell_size
+                # Sample colors from transformed points
+                for pt in sample_points:
+                    # Get color info using clean frame
+                    color_name, avg_color = get_cell_color(clean_frame, pt)
                     
-                    # Get color from original frame but draw on visualization frame
-                    color_name, avg_color = get_cell_color(frame, sample_point)
-                    
-                    # Draw sampling point and color name on visualization frame
-                    cv2.circle(vis_frame, tuple(sample_point.astype(int)), 3, (0,0,255), -1)
-                    cv2.putText(vis_frame, color_name, 
-                              (int(sample_point[0]), int(sample_point[1] - 10)),
+                    # Draw visualization on display frame
+                    pt_int = tuple(pt.astype(int))
+                    cv2.circle(frame, pt_int, 3, (0,0,255), -1)
+                    cv2.putText(frame, f"{color_name}", 
+                              (pt_int[0], pt_int[1] - 10),
                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
 
-            cv2.imshow('Rubik Face Detection', vis_frame)
+            cv2.imshow('Rubik Face Detection', frame)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break

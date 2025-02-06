@@ -3,11 +3,10 @@ import numpy as np
 
 
 # Camera calibration parameters (replace with your camera's values)
-camera_matrix = np.array([[671.20897465,   0, 358.04351228],
-                              [0, 667.36928555, 255.90090719],
-                              [0, 0, 1]], dtype=float)
-dist_coeffs = np.array([[0.01178018,  1.012701,    0.01006079,
-                           0.01557372, -2.77755339]], dtype=float)  # np.zeros((4, 1))
+camera_matrix = np.array([[763.7055796,    0,         420.00145036],
+                        [  0,         756.64528587, 202.20156225],
+                        [  0,           0,           1        ]], dtype=float)
+dist_coeffs = np.array([[ 0.09461912, -0.96563609, -0.00633544,  0.02877166,  2.01734678]], dtype=float)  # np.zeros((4, 1))
 
 def draw_marker_info(frame, corners, ids, rvecs, tvecs):
     """Draw marker ID and pose information on frame"""

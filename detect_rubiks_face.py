@@ -17,14 +17,7 @@ class Color(Enum):
     def __str__(self):
         return self.value
 
-# Global variables for calibration
-calibrated_colors = {}
-current_color = None
-calibration_complete = False
-marker_size = 0.05  # 5cm marker
-cell_size = marker_size * 1.5
-
-# Updated marker to color mapping using enum
+# Mapping from marker id to its associated color (as a Color enum)
 MARKER_TO_COLOR = {
     0: Color.RED,
     1: Color.BLUE,
@@ -34,18 +27,47 @@ MARKER_TO_COLOR = {
     5: Color.GREEN
 }
 
+# Mapping from detected face (via its center color) to the intended cube face.
+# Note: We will use the following cube face letters: U, R, F, D, L, B
+color_to_face = {
+    Color.WHITE:  'UP',    # Up face (U)
+    Color.RED:    'RIGHT', # Right face (R)
+    Color.GREEN:  'FACE',  # Front face (F)
+    Color.YELLOW: 'DOWN',  # Down face (D)
+    Color.ORANGE: 'LEFT',  # Left face (L)
+    Color.BLUE:   'BACK'   # Back face (B)
+}
+
+# This dictionary converts our Color enum directly to the cube string letter.
+color_to_letter = {
+    Color.WHITE: 'U',
+    Color.RED: 'R',
+    Color.GREEN: 'F',
+    Color.YELLOW: 'D',
+    Color.ORANGE: 'L',
+    Color.BLUE: 'B'
+}
+
+# Global variables for calibration
+calibrated_colors = {}
+current_color = None
+calibration_complete = False
+marker_size = 0.05  # 5cm marker
+cell_size = marker_size * 1.5
+
 class RubiksCubeFace:
     def __init__(self, marker_id):
         self.marker_id = marker_id
-        self.samples = []  # Will store BGR values
-        self.final_colors = None
+        self.samples = []         # Each sample is a list of 9 Color enum values (one per cell)
+        self.final_colors = None  # Will be a list of 9 Color enum values after averaging
         self.sampling_times = []
         self.start_time = None
+        # Use the center color from the marker mapping.
         self.center_color = MARKER_TO_COLOR[marker_id]
         
     def add_sample(self, colors, bgr_values):
-        """Store both color names and BGR values"""
-        self.samples.append(bgr_values)  # Store BGR values
+        """Store both the detected color names and their BGR values."""
+        self.samples.append(bgr_values)  # we store the BGR values for each cell
         self.sampling_times.append(time.time())
         
     def is_sampling_complete(self):
@@ -55,19 +77,19 @@ class RubiksCubeFace:
         if not self.is_sampling_complete():
             return False
             
-        # Convert samples to numpy array for easier processing
-        all_samples = np.array(self.samples)
-        # Compute mean BGR values for each cell
+        # Convert samples to numpy array for easier processing.
+        all_samples = np.array(self.samples)  # shape: (num_samples, 9, 3)
+        # Compute mean BGR values for each cell (resulting in an array of shape (9, 3)).
         mean_bgr_values = np.mean(all_samples, axis=0)
         
-        # Convert mean BGR values to color names
+        # Determine the final color for each cell
         self.final_colors = []
         for i, bgr_value in enumerate(mean_bgr_values):
-            # For center position (index 4), use the known color
+            # For the center position (index 4) we already know the color.
             if i == 4:
                 self.final_colors.append(self.center_color)
             else:
-                # Find closest calibrated color
+                # Find the calibrated color whose BGR value is closest to bgr_value.
                 min_dist = float('inf')
                 closest_color = None
                 for color_name, color_bgr in calibrated_colors.items():
@@ -76,14 +98,13 @@ class RubiksCubeFace:
                         min_dist = dist
                         closest_color = color_name
                 self.final_colors.append(closest_color)
-        
         return True
 
 def mouse_callback(event, x, y, flags, param):
     global calibrated_colors, current_color, calibration_complete
     if event == cv2.EVENT_LBUTTONDOWN and current_color is not None:
         frame = param
-        # Sample color from 5x5 region
+        # Sample color from a 5x5 region around the clicked point.
         roi = frame[y-2:y+3, x-2:x+3]
         avg_color = tuple(np.mean(roi, axis=(0, 1)).astype(int))
         calibrated_colors[current_color] = avg_color
@@ -115,17 +136,12 @@ def calibrate_colors(cap):
     return calibrated_colors
 
 def get_cell_color(frame, point):
-    """Sample color from a point and classify it as a Rubik's color"""
-    global calibrated_colors
-    global calibrated_colors
-    
-    # Sample color from 5x5 region around point
+    """Sample color from a point in the frame and classify it as one of the Rubik's colors."""
     x, y = int(point[0]), int(point[1])
     roi = frame[y-2:y+3, x-2:x+3]
     avg_color = np.mean(roi, axis=(0, 1))
     
-    # Find closest calibrated color
-    # Find closest calibrated color
+    # Find the calibrated color whose BGR value is closest to the sampled value.
     min_dist = float('inf')
     closest_color = None
     for color_name, color_bgr in calibrated_colors.items():
@@ -137,20 +153,16 @@ def get_cell_color(frame, point):
     return closest_color, tuple(avg_color.astype(int))
 
 def transform_points(points_3d, rvec, tvec, camera_matrix, dist_coeffs):
-    """Transform 3D points using rotation and translation, then project to 2D"""
-    # Convert rotation vector to rotation matrix
+    """Transform 3D points using the marker pose and project them to 2D image coordinates."""
+    # Convert rotation vector to rotation matrix.
     rot_matrix, _ = cv2.Rodrigues(rvec)
-    
-    # Transform points
     points_transformed = np.dot(rot_matrix, points_3d.T).T + tvec
-    
-    # Project to image plane
     points_2d, _ = cv2.projectPoints(points_transformed, np.zeros(3), np.zeros(3), 
-                                   camera_matrix, dist_coeffs)
+                                     camera_matrix, dist_coeffs)
     return points_2d.reshape(-1, 2)
 
 def process_frame(frame, detector, detected_faces=None):
-    """Process a single frame to detect Rubik's cube face"""
+    """Process a single frame to detect a Rubik's cube face and sample its colors."""
     if detected_faces is None:
         detected_faces = {}
         
@@ -158,43 +170,42 @@ def process_frame(frame, detector, detected_faces=None):
         corners, ids, rejected = detector.detectMarkers(frame)
 
         if ids is not None:
-            marker_id = ids[0][0]  # Get the first marker ID
+            marker_id = ids[0][0]  # Get the first detected marker's ID.
             
-            # Verify valid marker ID
+            # Only process markers with a valid mapping.
             if marker_id not in MARKER_TO_COLOR:
                 cv2.putText(frame, f"Invalid marker ID: {marker_id}", 
                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 return True, detected_faces
 
-            # Create clean copy for sampling
+            # Make a clean copy for sampling.
             clean_frame = frame.copy()
             
-            # Get pose
+            # Estimate pose.
             rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                corners, 0.05, camera_matrix, dist_coeffs)
+                corners, marker_size, camera_matrix, dist_coeffs)
             
-            # Draw marker info on display frame only
+            # Draw marker info on the display frame.
             draw_marker_info(frame, corners, ids, rvecs, tvecs)
             
-            # Define grid positions in 3D space (z=0 plane)
-            
+            # Define the 3x3 grid positions (on the marker's plane, z=0)
             grid_positions = np.array([
                 [1, -1, 0], [0, -1, 0], [-1, -1, 0],
                 [1,  0, 0], [0,  0, 0], [-1,  0, 0],
                 [1,  1, 0], [0,  1, 0], [-1,  1, 0]
             ]) * cell_size
             
-            # Transform grid positions using marker pose
+            
+            # Transform grid positions into image coordinates.
             sample_points = transform_points(grid_positions, 
                                           rvecs[0], tvecs[0], 
                                           camera_matrix, dist_coeffs)
             
-            # Sample colors from transformed points
+            # Sample colors from each cell.
             current_colors = []
             current_bgr_values = []
             for i, pt in enumerate(sample_points):
-                if i == 4:  # Center position
-                    # Use dummy values for center position
+                if i == 4:  # For the center cell, we already know its color.
                     current_colors.append(MARKER_TO_COLOR[marker_id])
                     current_bgr_values.append((0, 0, 0))
                     continue
@@ -203,12 +214,12 @@ def process_frame(frame, detector, detected_faces=None):
                 current_colors.append(color_name)
                 current_bgr_values.append(avg_color)
                 pt_int = tuple(pt.astype(int))
-                cv2.circle(frame, pt_int, 3, (0,0,255), -1)
+                cv2.circle(frame, pt_int, 3, (0, 0, 255), -1)
                 cv2.putText(frame, f"{color_name}", 
                           (pt_int[0], pt_int[1] - 10),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
             
-            # Handle face detection sequence
+            # Begin (or continue) sampling for this face.
             if marker_id not in detected_faces:
                 detected_faces[marker_id] = RubiksCubeFace(marker_id)
                 detected_faces[marker_id].start_time = time.time()
@@ -217,10 +228,10 @@ def process_frame(frame, detector, detected_faces=None):
             current_time = time.time()
             
             if not face.is_sampling_complete():
-                # Wait 1 second before starting sampling
+                # Wait 1 second for the face to settle.
                 if current_time - face.start_time >= 1.0:
                     samples_left = 5 - len(face.samples)
-                    # Check if we can take a new sample (500ms interval)
+                    # Only sample if at least 500ms have passed since the last sample.
                     if not face.sampling_times or current_time - face.sampling_times[-1] >= 0.5:
                         face.add_sample(current_colors, current_bgr_values)
                     cv2.putText(frame, f"Sampling face {marker_id}: {samples_left} samples left", 
@@ -241,7 +252,7 @@ def process_frame(frame, detector, detected_faces=None):
                 cv2.putText(frame, f"Face {marker_id} already captured", 
                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        # Show number of faces detected
+        # Show number of faces still needed.
         faces_left = 6 - len([f for f in detected_faces.values() if f.is_sampling_complete()])
         cv2.putText(frame, f"Faces left: {faces_left}", 
                   (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
@@ -263,7 +274,7 @@ def main():
         print("Cannot open webcam")
         return
 
-    # Add calibration step
+    # Perform color calibration.
     global calibrated_colors
     calibrated_colors = calibrate_colors(cap)
     if calibrated_colors is None:
@@ -272,11 +283,14 @@ def main():
         cv2.destroyAllWindows()
         return
 
+    # Prepare the ArUco detector.
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     parameters = cv2.aruco.DetectorParameters()
     detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
     detected_faces = {}
+    cube_string_printed = False  # Make sure we print the cube string only once.
+    
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -285,6 +299,32 @@ def main():
         continue_processing, detected_faces = process_frame(frame, detector, detected_faces)
         if not continue_processing:
             break
+
+        # Once all six faces have been captured, build and print the cube definition string.
+        if (not cube_string_printed and len(detected_faces) == 6 and 
+            all(face.is_sampling_complete() for face in detected_faces.values())):
+            
+            # Create a mapping from center color to the corresponding RubiksCubeFace.
+            face_by_color = {}
+            for face in detected_faces.values():
+                face_by_color[face.center_color] = face
+
+            try:
+                # Build the cube definition string in the order:
+                # Up (center color WHITE), Right (RED), Front (GREEN), Down (YELLOW), Left (ORANGE), Back (BLUE)
+                cube_str = ''.join([
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.WHITE].final_colors),
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.RED].final_colors),
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.GREEN].final_colors),
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.YELLOW].final_colors),
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.ORANGE].final_colors),
+                    ''.join(color_to_letter[color] for color in face_by_color[Color.BLUE].final_colors),
+                ])
+                print("\nCube definition string:")
+                print(cube_str)
+                cube_string_printed = True
+            except KeyError as e:
+                print("Error: Missing face", e)
 
     cap.release()
     cv2.destroyAllWindows()

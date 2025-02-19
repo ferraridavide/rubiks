@@ -6,6 +6,7 @@ from enum import Enum
 from collections import defaultdict
 from detect_aruco_cam import camera_matrix, dist_coeffs, draw_marker_info
 
+# Define the Rubik’s cube colors as an Enum.
 class Color(Enum):
     RED = 'red'
     BLUE = 'blue'
@@ -49,25 +50,35 @@ color_to_letter = {
 }
 
 # Global variables for calibration
-calibrated_colors = {}
+calibrated_colors = {}  # Will store Lab values keyed by Color enum.
 current_color = None
 calibration_complete = False
 marker_size = 0.05  # 5cm marker
 cell_size = marker_size * 1.5
 
+# Helper function: Convert a BGR color (or average) to Lab.
+def bgr_to_lab(bgr):
+    """
+    Converts a BGR color (as a tuple or list of 3 ints) to Lab.
+    """
+    # cv2.cvtColor requires an image of shape (1,1,3) of type uint8.
+    bgr_array = np.uint8([[list(bgr)]])
+    lab = cv2.cvtColor(bgr_array, cv2.COLOR_BGR2LAB)
+    return lab[0][0].astype(np.float32)
+
 class RubiksCubeFace:
     def __init__(self, marker_id):
         self.marker_id = marker_id
-        self.samples = []         # Each sample is a list of 9 Color enum values (one per cell)
+        self.samples = []         # Each sample is a list of 9 Lab values (one per cell)
         self.final_colors = None  # Will be a list of 9 Color enum values after averaging
         self.sampling_times = []
         self.start_time = None
         # Use the center color from the marker mapping.
         self.center_color = MARKER_TO_COLOR[marker_id]
         
-    def add_sample(self, colors, bgr_values):
-        """Store both the detected color names and their BGR values."""
-        self.samples.append(bgr_values)  # we store the BGR values for each cell
+    def add_sample(self, colors, lab_values):
+        """Store both the detected color names and their Lab values."""
+        self.samples.append(lab_values)  # each sample is a list of 9 Lab values
         self.sampling_times.append(time.time())
         
     def is_sampling_complete(self):
@@ -77,23 +88,23 @@ class RubiksCubeFace:
         if not self.is_sampling_complete():
             return False
             
-        # Convert samples to numpy array for easier processing.
+        # Convert samples to a numpy array for easier processing.
         all_samples = np.array(self.samples)  # shape: (num_samples, 9, 3)
-        # Compute mean BGR values for each cell (resulting in an array of shape (9, 3)).
-        mean_bgr_values = np.mean(all_samples, axis=0)
+        # Compute mean Lab values for each cell (resulting in an array of shape (9, 3)).
+        mean_lab_values = np.mean(all_samples, axis=0)
         
-        # Determine the final color for each cell
+        # Determine the final color for each cell.
         self.final_colors = []
-        for i, bgr_value in enumerate(mean_bgr_values):
+        for i, lab_value in enumerate(mean_lab_values):
             # For the center position (index 4) we already know the color.
             if i == 4:
                 self.final_colors.append(self.center_color)
             else:
-                # Find the calibrated color whose BGR value is closest to bgr_value.
+                # Find the calibrated color whose Lab value is closest to lab_value.
                 min_dist = float('inf')
                 closest_color = None
-                for color_name, color_bgr in calibrated_colors.items():
-                    dist = np.linalg.norm(bgr_value - color_bgr)
+                for color_name, calibrated_lab in calibrated_colors.items():
+                    dist = np.linalg.norm(lab_value - calibrated_lab)
                     if dist < min_dist:
                         min_dist = dist
                         closest_color = color_name
@@ -104,11 +115,18 @@ def mouse_callback(event, x, y, flags, param):
     global calibrated_colors, current_color, calibration_complete
     if event == cv2.EVENT_LBUTTONDOWN and current_color is not None:
         frame = param
+        # Ensure we are not near the border.
+        h, w = frame.shape[:2]
+        if x - 2 < 0 or x + 3 > w or y - 2 < 0 or y + 3 > h:
+            print("Clicked too close to border; try again.")
+            return
         # Sample color from a 5x5 region around the clicked point.
         roi = frame[y-2:y+3, x-2:x+3]
-        avg_color = tuple(np.mean(roi, axis=(0, 1)).astype(int))
-        calibrated_colors[current_color] = avg_color
-        print(f"Calibrated {current_color}: {avg_color}")
+        avg_bgr = np.mean(roi, axis=(0, 1))
+        # Convert the average BGR value to Lab.
+        avg_lab = bgr_to_lab(avg_bgr)
+        calibrated_colors[current_color] = avg_lab
+        print(f"Calibrated {current_color}: BGR={tuple(avg_bgr.astype(int))}, Lab={tuple(avg_lab.astype(int))}")
 
 def calibrate_colors(cap):
     global current_color, calibration_complete, calibrated_colors
@@ -123,10 +141,11 @@ def calibrate_colors(cap):
             ret, frame = cap.read()
             if not ret:
                 return None
-                
+            # Provide instruction on the frame.
             cv2.putText(frame, f"Click on {color} color", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
             cv2.imshow('Calibration', frame)
+            # Set the mouse callback with the current frame.
             cv2.setMouseCallback('Calibration', mouse_callback, frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -136,21 +155,31 @@ def calibrate_colors(cap):
     return calibrated_colors
 
 def get_cell_color(frame, point):
-    """Sample color from a point in the frame and classify it as one of the Rubik's colors."""
+    """
+    Sample color from a point in the frame and classify it as one of the Rubik's colors.
+    This function converts the sampled ROI to the Lab color space.
+    """
     x, y = int(point[0]), int(point[1])
+    h, w = frame.shape[:2]
+    # Ensure ROI is within image boundaries.
+    if x - 2 < 0 or x + 3 > w or y - 2 < 0 or y + 3 > h:
+        return None, (0, 0, 0)
     roi = frame[y-2:y+3, x-2:x+3]
-    avg_color = np.mean(roi, axis=(0, 1))
+    # Convert ROI to Lab
+    roi_lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    avg_lab = np.mean(roi_lab, axis=(0, 1))
     
-    # Find the calibrated color whose BGR value is closest to the sampled value.
+    # Compare against calibrated Lab values.
     min_dist = float('inf')
     closest_color = None
-    for color_name, color_bgr in calibrated_colors.items():
-        dist = np.linalg.norm(avg_color - color_bgr)
+    for color_name, color_lab in calibrated_colors.items():
+        dist = np.linalg.norm(avg_lab - color_lab)
         if dist < min_dist:
             min_dist = dist
             closest_color = color_name
             
-    return closest_color, tuple(avg_color.astype(int))
+    # Also return the average Lab values (for later averaging).
+    return closest_color, tuple(avg_lab.astype(int))
 
 def transform_points(points_3d, rvec, tvec, camera_matrix, dist_coeffs):
     """Transform 3D points using the marker pose and project them to 2D image coordinates."""
@@ -195,7 +224,6 @@ def process_frame(frame, detector, detected_faces=None):
                 [1,  1, 0], [0,  1, 0], [-1,  1, 0]
             ]) * cell_size
             
-            
             # Transform grid positions into image coordinates.
             sample_points = transform_points(grid_positions, 
                                           rvecs[0], tvecs[0], 
@@ -203,16 +231,18 @@ def process_frame(frame, detector, detected_faces=None):
             
             # Sample colors from each cell.
             current_colors = []
-            current_bgr_values = []
+            current_lab_values = []
             for i, pt in enumerate(sample_points):
                 if i == 4:  # For the center cell, we already know its color.
                     current_colors.append(MARKER_TO_COLOR[marker_id])
-                    current_bgr_values.append((0, 0, 0))
+                    current_lab_values.append((0, 0, 0))  # dummy; center is predetermined.
                     continue
                 
-                color_name, avg_color = get_cell_color(clean_frame, pt)
+                color_name, avg_lab = get_cell_color(clean_frame, pt)
+                if color_name is None:
+                    continue  # Skip if ROI is out of bounds.
                 current_colors.append(color_name)
-                current_bgr_values.append(avg_color)
+                current_lab_values.append(avg_lab)
                 pt_int = tuple(pt.astype(int))
                 cv2.circle(frame, pt_int, 3, (0, 0, 255), -1)
                 cv2.putText(frame, f"{color_name}", 
@@ -233,7 +263,7 @@ def process_frame(frame, detector, detected_faces=None):
                     samples_left = 5 - len(face.samples)
                     # Only sample if at least 500ms have passed since the last sample.
                     if not face.sampling_times or current_time - face.sampling_times[-1] >= 0.5:
-                        face.add_sample(current_colors, current_bgr_values)
+                        face.add_sample(current_colors, current_lab_values)
                     cv2.putText(frame, f"Sampling face {marker_id}: {samples_left} samples left", 
                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 else:

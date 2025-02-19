@@ -87,7 +87,7 @@ def cube_string_to_config(cube_string):
 # }
 
 
-initial_config_string = "DUUDUDUDUFRLLRLFLLLLFBFFBFFUUDUDUDDDLRBRLFRRBRFBBBBRBR"
+initial_config_string = "RBRDUUUDULLULRRLLLBFBBFDBFDDUFDDFDUFDBRRLRLRRFLFUBFUBB"
 
 initial_config = cube_string_to_config(initial_config_string)
 
@@ -114,7 +114,7 @@ def config_to_cube_string(config):
 
 # --- New: Moves from your Rubik's cube solver ---
 # You can change this string to whatever your solver returns.
-solver_moves = "R U D2 B2 R B D' L' U2 B2 U' F2 R2 D' F2 L2 F2 D'"
+solver_moves = "U L' U2 R L' U' F2 B2 R2 D B2 R2 B2 R2"
 moves_list = solver_moves.split()
 
 # (Optional) Show a little text with how many moves remain.

@@ -6,6 +6,10 @@ from enum import Enum
 from collections import defaultdict
 from detect_aruco_cam import camera_matrix, dist_coeffs, draw_marker_info
 
+# Global flag to control sampling mode.
+# Set to True for manual (single-sample) mode; False for automatic multi-sample mode.
+SINGLE_SAMPLE_MODE = True
+
 # Define the Rubik’s cube colors as an Enum.
 class Color(Enum):
     RED = 'red'
@@ -82,7 +86,9 @@ class RubiksCubeFace:
         self.sampling_times.append(time.time())
         
     def is_sampling_complete(self):
-        return len(self.samples) >= 5
+        # In single-sample mode, one sample is enough; otherwise, require 5 samples.
+        required_samples = 1 if SINGLE_SAMPLE_MODE else 5
+        return len(self.samples) >= required_samples
         
     def compute_final_colors(self):
         if not self.is_sampling_complete():
@@ -194,50 +200,61 @@ def process_frame(frame, detector, detected_faces=None):
     """Process a single frame to detect a Rubik's cube face and sample its colors."""
     if detected_faces is None:
         detected_faces = {}
-        
+
     try:
+        # Grab a key press for this frame.
+        key = cv2.waitKey(1) & 0xFF
+
         corners, ids, rejected = detector.detectMarkers(frame)
 
         if ids is not None:
-            marker_id = ids[0][0]  # Get the first detected marker's ID.
-            
-            # Only process markers with a valid mapping.
+            marker_id = ids[0][0]  # Use the first detected marker's ID.
+
             if marker_id not in MARKER_TO_COLOR:
                 cv2.putText(frame, f"Invalid marker ID: {marker_id}", 
                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                return True, detected_faces
+                return (key != ord('q')), detected_faces
 
-            # Make a clean copy for sampling.
             clean_frame = frame.copy()
-            
-            # Estimate pose.
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                corners, marker_size, camera_matrix, dist_coeffs)
-            
-            # Draw marker info on the display frame.
-            draw_marker_info(frame, corners, ids, rvecs, tvecs)
-            
-            # Define the 3x3 grid positions (on the marker's plane, z=0)
-            grid_positions = np.array([
-                [1, -1, 0], [0, -1, 0], [-1, -1, 0],
-                [1,  0, 0], [0,  0, 0], [-1,  0, 0],
-                [1,  1, 0], [0,  1, 0], [-1,  1, 0]
-            ]) * cell_size
-            
-            # Transform grid positions into image coordinates.
-            sample_points = transform_points(grid_positions, 
-                                          rvecs[0], tvecs[0], 
-                                          camera_matrix, dist_coeffs)
-            
+
+            # Instead of estimating the 3D pose, compute the marker center and scale in image coordinates.
+            marker_corners = corners[0].reshape((4, 2))
+            marker_center = np.mean(marker_corners, axis=0)
+
+            # Estimate marker width in pixels (average of top and right edge lengths)
+            width_top = np.linalg.norm(marker_corners[0] - marker_corners[1])
+            width_right = np.linalg.norm(marker_corners[1] - marker_corners[2])
+            marker_pixel_width = (width_top + width_right) / 2.0
+
+            # Define the cell size in pixels (using the same scale factor as before)
+            pixel_cell_size = marker_pixel_width * 1.5
+
+            # Define fixed offsets for the 3x3 grid relative to the marker center.
+            offsets = np.array([
+                [-pixel_cell_size, -pixel_cell_size],
+                [ 0,              -pixel_cell_size],
+                [ pixel_cell_size, -pixel_cell_size],
+                [-pixel_cell_size,  0],
+                [ 0,               0],
+                [ pixel_cell_size,  0],
+                [-pixel_cell_size,  pixel_cell_size],
+                [ 0,               pixel_cell_size],
+                [ pixel_cell_size,  pixel_cell_size]
+            ])
+
+            # Compute sample points by adding the fixed offsets to the marker center.
+            sample_points = marker_center + offsets
+
             # Sample colors from each cell.
             current_colors = []
             current_lab_values = []
             for i, pt in enumerate(sample_points):
-                if i == 4:  # For the center cell, we already know its color.
+                # For the center cell (index 4), we already know its color.
+                if i == 4:
                     current_colors.append(MARKER_TO_COLOR[marker_id])
-                    current_lab_values.append((0, 0, 0))  # dummy; center is predetermined.
+                    current_lab_values.append((0, 0, 0))  # dummy value; center is predetermined.
                     continue
-                
+
                 color_name, avg_lab = get_cell_color(clean_frame, pt)
                 if color_name is None:
                     continue  # Skip if ROI is out of bounds.
@@ -246,32 +263,37 @@ def process_frame(frame, detector, detected_faces=None):
                 pt_int = tuple(pt.astype(int))
                 cv2.circle(frame, pt_int, 3, (0, 0, 255), -1)
                 cv2.putText(frame, f"{color_name}", 
-                          (pt_int[0], pt_int[1] - 10),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-            
+                            (pt_int[0], pt_int[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
             # Begin (or continue) sampling for this face.
             if marker_id not in detected_faces:
                 detected_faces[marker_id] = RubiksCubeFace(marker_id)
                 detected_faces[marker_id].start_time = time.time()
-            
+
             face = detected_faces[marker_id]
             current_time = time.time()
-            
+
             if not face.is_sampling_complete():
-                # Wait 1 second for the face to settle.
-                if current_time - face.start_time >= 1.0:
-                    samples_left = 5 - len(face.samples)
-                    # Only sample if at least 500ms have passed since the last sample.
-                    if not face.sampling_times or current_time - face.sampling_times[-1] >= 0.5:
+                if SINGLE_SAMPLE_MODE:
+                    cv2.putText(frame, f"Press 's' to capture face {marker_id}", 
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    if key == ord('s'):
                         face.add_sample(current_colors, current_lab_values)
-                    cv2.putText(frame, f"Sampling face {marker_id}: {samples_left} samples left", 
-                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        face.compute_final_colors()
                 else:
-                    time_left = 1.0 - (current_time - face.start_time)
-                    cv2.putText(frame, f"Hold still face {marker_id}... {time_left:.1f}s", 
-                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                
-                if face.is_sampling_complete():
+                    if current_time - face.start_time >= 1.0:
+                        samples_left = 5 - len(face.samples)
+                        if not face.sampling_times or current_time - face.sampling_times[-1] >= 0.5:
+                            face.add_sample(current_colors, current_lab_values)
+                        cv2.putText(frame, f"Sampling face {marker_id}: {samples_left} samples left", 
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    else:
+                        time_left = 1.0 - (current_time - face.start_time)
+                        cv2.putText(frame, f"Hold still face {marker_id}... {time_left:.1f}s", 
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+                if face.is_sampling_complete() and face.final_colors is None:
                     face.compute_final_colors()
                     print(f"\nFace {marker_id} colors:")
                     print("-------------")
@@ -280,23 +302,23 @@ def process_frame(frame, detector, detected_faces=None):
                     print("-------------")
             else:
                 cv2.putText(frame, f"Face {marker_id} already captured", 
-                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         # Show number of faces still needed.
         faces_left = 6 - len([f for f in detected_faces.values() if f.is_sampling_complete()])
         cv2.putText(frame, f"Faces left: {faces_left}", 
-                  (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
+                    (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         if faces_left == 0:
             cv2.putText(frame, "All faces captured!", 
-                      (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         cv2.imshow('Rubik Face Detection', frame)
-        return cv2.waitKey(1) & 0xFF != ord('q'), detected_faces
+        return (key != ord('q')), detected_faces
 
     except Exception as e:
         print(f"Error processing frame: {e}")
         return False, detected_faces
+
 
 def main():
     cap = cv2.VideoCapture(0)

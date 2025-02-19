@@ -1,9 +1,9 @@
 from ursina import *
 from textwrap import dedent
 import random
+import kociemba
 
-app = Ursina()
-window.fullscreen = False
+app = Ursina(window_title='Rubik\'s Cube Solver',borderless=False, fullscreen=False, position=(35,35))
 
 # -------------------------------
 # Scene setup (floor, sky, camera)
@@ -32,31 +32,18 @@ camera.world_position = (0, 0, -15)
 cube_model = 'models/custom_cube'
 CUBES = []
 PARENT = Entity()  # used as a temporary parent for rotations
-animation_time = 0.5
-action_trigger = True
-action_mode = True  # initially set to True (action mode), then toggled to start in view mode
-message = Text(origin=(0, 19), color=color.black)
+animation_time = 1.25
+action_trigger = True  # used to block new moves while an animation is running
 
+animation_curve = curve.in_out_expo
 
 # -------------------------------
 # INITIAL CONFIGURATION
 # -------------------------------
-
 def cube_string_to_config(cube_string):
-    """
-    Converts a cube definition string into the configuration dictionary format.
-
-    The cube string is expected to have 54 characters, corresponding to:
-      U1-U9, R1-R9, F1-F9, D1-D9, L1-L9, B1-B9.
-
-    Returns:
-        A dictionary with keys: 'LEFT', 'RIGHT', 'UP', 'DOWN', 'FACE', 'BACK',
-        where each value is a list of 9 facelets (colors).
-    """
     if len(cube_string) != 54:
         raise ValueError("Cube string must be exactly 54 characters long.")
     
-    # Map each letter back to its corresponding color.
     letter_to_color = {
         'U': color.white,
         'R': color.red,
@@ -66,7 +53,6 @@ def cube_string_to_config(cube_string):
         'B': color.blue
     }
     
-    # Build the configuration dictionary.
     config = {
         'UP':    [letter_to_color[c] for c in cube_string[0:9]],
         'RIGHT': [letter_to_color[c] for c in cube_string[9:18]],
@@ -77,48 +63,12 @@ def cube_string_to_config(cube_string):
     }
     return config
 
-# initial_config = {
-#     'LEFT':   [color.orange for _ in range(9)],
-#     'RIGHT':  [color.red    for _ in range(9)],
-#     'UP':    [color.white  for _ in range(9)],
-#     'DOWN': [color.yellow for _ in range(9)],
-#     'FACE':   [color.green  for _ in range(9)],
-#     'BACK':   [color.blue   for _ in range(9)]
-# }
-
-
-initial_config_string = "RBRDUUUDULLULRRLLLBFBBFDBFDDUFDDFDUFDBRRLRLRRFLFUBFUBB"
-
+initial_config_string = "DRLUUBFBRBLURRLRUBLRDDFDLFUFUFFDBRDUBRUFLLFDDBFLUBLRBD"
 initial_config = cube_string_to_config(initial_config_string)
-
-def config_to_cube_string(config):
-    # Map each color to the letter used in the cube string notation.
-    color_to_letter = {
-        color.white:  'U',
-        color.red:    'R',
-        color.green:  'F',
-        color.yellow: 'D',
-        color.orange: 'L',
-        color.blue:   'B'
-    }
-    
-    # The order of faces in the cube string is: Up, Right, Front, Down, Left, Back.
-    face_order = ['UP', 'RIGHT', 'FACE', 'DOWN', 'LEFT', 'BACK']
-    
-    # Build the cube string by converting each face’s list of colors into letters.
-    cube_string = ""
-    for face in face_order:
-        # Join the letters for each facelet in the current face.
-        cube_string += "".join(color_to_letter[facelet] for facelet in config[face])
-    return cube_string
-
-# --- New: Moves from your Rubik's cube solver ---
-# You can change this string to whatever your solver returns.
-solver_moves = "U L' U2 R L' U' F2 B2 R2 D B2 R2 B2 R2"
+solver_moves = kociemba.solve(initial_config_string)
 moves_list = solver_moves.split()
-
-# (Optional) Show a little text with how many moves remain.
 move_message = Text(text=f"Moves left: {len(moves_list)}", position=(-0.5,0.45), scale=2, color=color.black)
+
 
 # -------------------------------
 # Helper: Create positions for each cubie on the surface.
@@ -135,7 +85,6 @@ def create_cube_positions():
 
 LEFT, DOWN, FACE, BACK, RIGHT, UP, SIDE_POSITIONS = create_cube_positions()
 
-# For rotations we still need to know which cubies belong to each face.
 cubes_side_positions = {
     'LEFT': LEFT,
     'DOWN': DOWN,
@@ -145,7 +94,6 @@ cubes_side_positions = {
     'UP': UP
 }
 
-# Mapping from side name to the rotation axis.
 rotation_axes = {
     'LEFT': 'x',
     'RIGHT': 'x',
@@ -159,27 +107,27 @@ rotation_axes = {
 # Functions to place stickers on cubies.
 # -------------------------------
 def get_sticker_index(face, pos):
-    if face == 'LEFT':  # face at x = -1; free: y and z.
+    if face == 'LEFT':
         row = 1 - pos.y
         col = 1 - pos.z
         return (int(row), int(col))
-    elif face == 'RIGHT':  # face at x = 1; free: y and z.
+    elif face == 'RIGHT':
         row = 1 - pos.y
         col = pos.z + 1
         return (int(row), int(col))
-    elif face == 'FACE':  # face at z = -1; free: x and y.
+    elif face == 'FACE':
         row = 1 - pos.y
         col = pos.x + 1
         return (int(row), int(col))
-    elif face == 'BACK':  # face at z = 1; free: x and y.
+    elif face == 'BACK':
         row = 1 - pos.y
         col = 1 - pos.x
         return (int(row), int(col))
-    elif face == 'UP':  # face at y = 1; free: x and z.
+    elif face == 'UP':
         row = 1 - pos.z
         col = pos.x + 1
         return (int(row), int(col))
-    elif face == 'DOWN':  # face at y = -1; free: x and z.
+    elif face == 'DOWN':
         row = pos.z + 1
         col = pos.x + 1
         return (int(row), int(col))
@@ -242,33 +190,11 @@ def apply_initial_config(config):
 # -------------------------------
 CUBES = [Entity(model=cube_model, color=color.dark_gray, position=pos) for pos in SIDE_POSITIONS]
 
-# -------------------------------
-# Create sensor entities to detect mouse clicks on each side.
-# -------------------------------
-def create_sensors():
-    def create_sensor(name, pos, scale):
-        return Entity(
-            name=name,
-            position=pos,
-            model='cube',
-            color=color.dark_gray,
-            scale=scale,
-            collider='box',
-            visible=False
-        )
-    return {
-        'LEFT':   create_sensor(name='LEFT', pos=(-0.99, 0, 0), scale=(1.01, 3.01, 3.01)),
-        'FACE':   create_sensor(name='FACE', pos=(0, 0, -0.99), scale=(3.01, 3.01, 1.01)),
-        'BACK':   create_sensor(name='BACK', pos=(0, 0, 0.99), scale=(3.01, 3.01, 1.01)),
-        'RIGHT':  create_sensor(name='RIGHT', pos=(0.99, 0, 0), scale=(1.01, 3.01, 3.01)),
-        'UP':    create_sensor(name='UP', pos=(0, 1, 0), scale=(3.01, 1.01, 3.01)),
-        'DOWN': create_sensor(name='DOWN', pos=(0, -1, 0), scale=(3.01, 1.01, 3.01))
-    }
-
-sensors = create_sensors()
+# Apply the initial cube configuration.
+apply_initial_config(initial_config)
 
 # -------------------------------
-# Rotation functions (modified to accept an angle)
+# Rotation functions
 # -------------------------------
 def reparent_to_scene():
     global CUBES, PARENT
@@ -299,59 +225,17 @@ def rotate_side(side_name, angle=90):
         if cube.position in cube_positions:
             cube.parent = PARENT
     if rotation_axis == 'x':
-        PARENT.animate_rotation_x(angle, duration=animation_time)
+        PARENT.animate_rotation_x(angle, duration=animation_time, curve=animation_curve)
     elif rotation_axis == 'y':
-        PARENT.animate_rotation_y(angle, duration=animation_time)
+        PARENT.animate_rotation_y(angle, duration=animation_time, curve=animation_curve)
     elif rotation_axis == 'z':
-        PARENT.animate_rotation_z(angle, duration=animation_time)
-    invoke(toggle_animation_trigger, delay=animation_time + 0.11)
-
-def rotate_side_without_animation(side_name, angle=90):
-    cube_positions = cubes_side_positions[side_name]
-    rotation_axis = rotation_axes[side_name]
-    reparent_to_scene()
-    for cube in CUBES:
-        if cube.position in cube_positions:
-            cube.parent = PARENT
-    if rotation_axis == 'x':
-        PARENT.rotation_x = angle
-    elif rotation_axis == 'y':
-        PARENT.rotation_y = angle
-    elif rotation_axis == 'z':
-        PARENT.rotation_z = angle
+        PARENT.animate_rotation_z(angle, duration=animation_time, curve=animation_curve)
+    invoke(toggle_animation_trigger, delay=animation_time + 0.1)
 
 # -------------------------------
-# (Un)comment one of these to set the initial state:
-# -------------------------------
-# (1) Use a random scramble:
-# def random_state(rotations=3):
-#     for _ in range(rotations):
-#         rotate_side_without_animation(random.choice(list(rotation_axes.keys())))
-# random_state(rotations=3)
-
-# (2) Or start with the specific initial configuration.
-use_initial_config = True
-if use_initial_config:
-    apply_initial_config(initial_config)
-
-# -------------------------------
-# Toggle between action (cube manipulation) and view mode.
-# -------------------------------
-def toggle_game_mode():
-    global action_mode, message
-    action_mode = not action_mode
-    mode_text = 'ACTION mode ON' if action_mode else 'VIEW mode ON'
-    msg = dedent(f"{mode_text} (to switch - press middle mouse button)").strip()
-    message.text = msg
-
-# Start in view mode.
-toggle_game_mode()
-
-# -------------------------------
-# Helper: Parse moves coming from your solver.
+# Parse moves from the solver.
 # -------------------------------
 def parse_move(move):
-    # The first character is the face letter.
     face_letter = move[0].upper()
     if face_letter == 'U':
         side_name = 'UP'
@@ -367,7 +251,6 @@ def parse_move(move):
         side_name = 'BACK'
     else:
         raise ValueError(f"Invalid move: {move}")
-    # Determine the rotation angle.
     if len(move) == 1:
         angle = 90
     elif move[1] == '2':
@@ -385,20 +268,11 @@ def parse_move(move):
 # Input handling
 # -------------------------------
 def input(key):
-    global action_mode, action_trigger, moves_list, move_message
-    print(key)
-    if key in ('left mouse down', 'right mouse down') and action_mode and action_trigger:
-        for hit in mouse.collisions:
-            collider_name = hit.entity.name
-            if (key == 'left mouse down' and collider_name in ['LEFT', 'RIGHT', 'FACE', 'BACK']) or \
-               (key == 'right mouse down' and collider_name in ['UP', 'DOWN']):
-                rotate_side(collider_name)
-                break
-    if key == 'space':
-        toggle_game_mode()
-    # --- NEW: Execute next solver move when N is pressed ---
+    global action_trigger, moves_list, move_message
     if key == 'n':
-        print("this")
+        # Only process the move if no animation is ongoing.
+        if not action_trigger:
+            return
         if moves_list:
             move = moves_list.pop(0)
             side, angle = parse_move(move)

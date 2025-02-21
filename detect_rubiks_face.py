@@ -324,7 +324,7 @@ def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Cannot open webcam")
-        return
+        return None
 
     # Perform color calibration.
     global calibrated_colors
@@ -333,7 +333,7 @@ def main():
         print("Calibration cancelled")
         cap.release()
         cv2.destroyAllWindows()
-        return
+        return None
 
     # Prepare the ArUco detector.
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -377,9 +377,10 @@ def main():
                 cube_string_printed = True
             except KeyError as e:
                 print("Error: Missing face", e)
-
+    
     cap.release()
     cv2.destroyAllWindows()
+    return cube_str
 
 if __name__ == "__main__":
     main()

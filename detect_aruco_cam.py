@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 
-# Camera calibration parameters (replace with your camera's values)
+# Camera calibration parameters 
 camera_matrix = np.array([[763.7055796,    0,         420.00145036],
                         [  0,         756.64528587, 202.20156225],
                         [  0,           0,           1        ]], dtype=float)
